@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Explorador 3D v2: seus dados + k-means</title>
+<style>
+:root{--bg:#f6f4ee;--fg:#1d2a24;--card:#fff;--mut:#6b7a72;--ac:#2a6f6b;--ln:#dcd8cc;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#121a17;--fg:#e8efe9;--card:#1b2622;--mut:#93a39a;--ln:#2d3b35;--ac:#5fc4bb}}
+:root[data-theme="dark"]{--bg:#121a17;--fg:#e8efe9;--card:#1b2622;--mut:#93a39a;--ln:#2d3b35;--ac:#5fc4bb}
+body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.5 system-ui,sans-serif;padding:20px}
+main{max-width:900px;margin:auto}h1{margin:0 0 4px;font-size:1.6rem}p.s{margin:0 0 16px;color:var(--mut)}
+.card{background:var(--card);border:1px solid var(--ln);border-radius:14px;padding:14px;margin-bottom:14px}
+canvas{width:100%;height:420px;display:block;border-radius:10px;cursor:grab;touch-action:none}
+.ctl{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+label{display:block;font-size:14px}input[type=range]{width:100%;accent-color:var(--ac)}
+button,.btn{background:var(--ac);color:#fff;border:0;border-radius:9px;padding:8px 12px;font:inherit;font-size:14px;cursor:pointer;display:inline-block;margin:0 6px 6px 0}
+.bar{height:12px;background:var(--ln);border-radius:6px;overflow:hidden;margin:3px 0 10px}
+.bar i{display:block;height:100%;background:var(--ac);transition:width .3s}
+small{color:var(--mut)}code{background:var(--bg);padding:1px 5px;border-radius:5px}
+</style></head><body><main>
+<h1>🔬 Explorador 3D v2</h1>
+<p class="s">PCA 3D + k-means. Use dados sintéticos ou carregue seu próprio CSV. Arraste para girar.</p>
+
+<div class="card"><canvas id="cv"></canvas><small id="lg"></small></div>
+
+<div class="card">
+<b>Dados</b><br><small id="src"></small><div style="margin-top:8px">
+<label class="btn">📂 Carregar CSV<input id="file" type="file" accept=".csv,.tsv,.txt" hidden></label>
+<button id="dl">⬇ Baixar CSV de exemplo</button><button id="re">🎲 Novos dados sintéticos</button></div>
+<small>Formato: 1ª coluna = id da amostra, 2ª = grupo (ex.: tipo celular), 3ª = lote (batch), demais = genes (números). Separador vírgula, ponto e vírgula ou tab.</small></div>
+
+<div class="card ctl">
+<label id="l1">Efeito de batch: <b id="v1"></b><input id="bs" type="range" min="0" max="4" step="0.1" value="3"></label>
+<label id="l2">Ruído técnico: <b id="v2"></b><input id="ns" type="range" min="0.3" max="3" step="0.1" value="1.2"></label>
+<label><input id="fix" type="checkbox"> Corrigir batch (centralizar por lote)</label>
+<label><input id="lg2" type="checkbox"> Transformar log2(x+1)</label>
+<label>Colorir por: <select id="by"><option value="t">Grupo</option><option value="b">Batch</option><option value="k">Cluster k-means</option></select></label>
+</div>
+
+<div class="card"><b>Pureza do agrupamento (k-means, k = nº de grupos)</b><br>
+<small>Quão bem os clusters encontrados coincidem com cada rótulo.</small>
+<div style="margin-top:8px">Coincide com o grupo (biologia): <b id="m1"></b></div><div class="bar"><i id="b1"></i></div>
+<div>Coincide com o batch (artefato): <b id="m2"></b></div><div class="bar"><i id="b2"></i></div>
+<small>Variância explicada: <span id="ve"></span></small></div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const PT=["#e4572e","#2a9d8f","#e9b92c","#2d9cdb","#8d5fd3","#6c757d","#d6336c","#74b816"],PB=["#4361ee","#f72585","#8d5fd3","#6c757d","#e9b92c","#2a9d8f"];
+let seed=7;const rnd=()=>(seed=(seed*16807)%2147483647)/2147483647;
+const gau=()=>Math.sqrt(-2*Math.log(rnd()+1e-9))*Math.cos(6.283*rnd());
+let RAW,T,B,tn,bn,synth=true,pts=[],K=[],S0={},yaw=.6,pit=.35,drag=false,lx,ly,auto=true;
+
+function genSynth(){
+  const G=20,N=300;
+  S0={prof:[0,1,2].map(()=>Array.from({length:G},()=>rnd()*6)),boff:[0,1].map(()=>Array.from({length:G},gau)),
+      z:Array.from({length:N},()=>Array.from({length:G},gau))};
+  T=Array.from({length:N},(_,i)=>i%3);B=T.map(()=>rnd()<.5?0:1);
+  tn=["Tipo A","Tipo B","Tipo C"];bn=["Lote 1","Lote 2"];synth=true;
+  $("src").textContent="Sintético: 300 células × 20 genes, 3 tipos, 2 lotes.";update();
+}
+function build(){
+  const bs=+$("bs").value,ns=+$("ns").value;
+  $("v1").textContent=bs.toFixed(1);$("v2").textContent=ns.toFixed(1);
+  RAW=T.map((t,i)=>S0.prof[t].map((m,g)=>m+S0.z[i][g]*ns+S0.boff[B[i]][g]*bs));
+}
+function update(){
+  $("l1").style.opacity=$("l2").style.opacity=synth?1:.35;$("bs").disabled=$("ns").disabled=!synth;
+  if(synth)build();
+  const N=RAW.length,G=RAW[0].length;
+  let X=RAW.map(r=>r.map(v=>$("lg2").checked?Math.log2(Math.max(v,0)+1):v));
+  if($("fix").checked){
+    const gm=Array(G).fill(0),bm=bn.map(()=>Array(G).fill(0)),bc=bn.map(()=>0);
+    X.forEach((r,i)=>{bc[B[i]]++;r.forEach((v,g)=>{gm[g]+=v/N;bm[B[i]][g]+=v})});
+    X=X.map((r,i)=>r.map((v,g)=>v-bm[B[i]][g]/bc[B[i]]+gm[g]));
+  }
+  pca(X);
+}
+function pca(X){
+  const N=X.length,G=X[0].length,mu=Array(G).fill(0);
+  X.forEach(r=>r.forEach((v,g)=>mu[g]+=v/N));
+  const C=X.map(r=>r.map((v,g)=>v-mu[g]));
+  const Km=Array.from({length:N},()=>new Float64Array(N));let tr=0;
+  for(let a=0;a<N;a++)for(let b=a;b<N;b++){let s=0;for(let g=0;g<G;g++)s+=C[a][g]*C[b][g];Km[a][b]=Km[b][a]=s/(N-1)}
+  for(let a=0;a<N;a++)tr+=Km[a][a];
+  const U=[],ev=[];
+  for(let k=0;k<3;k++){
+    let v=Array.from({length:N},gau);
+    for(let it=0;it<60;it++){
+      let w=Km.map(row=>{let s=0;for(let j=0;j<N;j++)s+=row[j]*v[j];return s});
+      U.forEach(p=>{let d=0;for(let j=0;j<N;j++)d+=w[j]*p[j];w=w.map((x,j)=>x-d*p[j])});
+      const n=Math.hypot(...w)||1;v=w.map(x=>x/n);
+    }
+    const Kv=Km.map(row=>{let s=0;for(let j=0;j<N;j++)s+=row[j]*v[j];return s});
+    const lam=Kv.reduce((s,x,j)=>s+x*v[j],0);
+    U.push(v);ev.push(lam/tr);
+  }
+  let S=Array.from({length:N},(_,i)=>U.map((u,k)=>u[i]*Math.sqrt(Math.max(ev[k],0)*tr)));
+  const mx=Math.max(...S.flat().map(Math.abs))||1;S=S.map(r=>r.map(x=>x/mx));
+  K=kmeans(S,Math.min(8,Math.max(2,tn.length)));
+  pts=S.map((p,i)=>({p,t:T[i],b:B[i],k:K[i]}));
+  const pa=purity(T),pb=purity(B);
+  $("m1").textContent=(pa*100).toFixed(0)+"%";$("b1").style.width=pa*100+"%";
+  $("m2").textContent=(pb*100).toFixed(0)+"%";$("b2").style.width=pb*100+"%";
+  $("ve").textContent=ev.map((e,i)=>"PC"+(i+1)+" "+(e*100).toFixed(0)+"%").join(" · ");
+}
+function kmeans(S,k){
+  const d2=(a,b)=>(a[0]-b[0])**2+(a[1]-b[1])**2+(a[2]-b[2])**2;
+  let c=[S[0]];
+  while(c.length<k){let bi=0,bd=-1;S.forEach((p,i)=>{const d=Math.min(...c.map(q=>d2(p,q)));if(d>bd){bd=d;bi=i}});c.push(S[bi])}
+  let as=[];
+  for(let it=0;it<20;it++){
+    as=S.map(p=>{let bi=0,bd=1e9;c.forEach((q,i)=>{const d=d2(p,q);if(d<bd){bd=d;bi=i}});return bi});
+    c=c.map((q,i)=>{const m=S.filter((_,j)=>as[j]===i);return m.length?[0,1,2].map(d=>m.reduce((s,p)=>s+p[d],0)/m.length):q});
+  }
+  return as;
+}
+function purity(L){
+  const m={};K.forEach((k,i)=>{m[k]??={};m[k][L[i]]=(m[k][L[i]]||0)+1});
+  return Object.values(m).reduce((s,o)=>s+Math.max(...Object.values(o)),0)/K.length;
+}
+/* CSV */
+$("file").onchange=e=>{
+  const f=e.target.files[0];if(!f)return;
+  const r=new FileReader();r.onload=()=>{
+    try{
+      const L=r.result.trim().split(/\r?\n/),sep=L[0].includes("\t")?"\t":L[0].includes(";")?";":",";
+      const rows=L.slice(1,801).map(l=>l.split(sep).map(x=>x.trim().replace(/^"|"$/g,"")));
+      const gs=rows[0].length-3;if(gs<2)throw 0;
+      const idx=(col,names)=>rows.map(r=>{let i=names.indexOf(r[col]);if(i<0){names.push(r[col]);i=names.length-1}return i});
+      tn=[];bn=[];T=idx(1,tn);B=idx(2,bn);
+      RAW=rows.map(r=>r.slice(3).map(Number));
+      if(RAW.some(r=>r.some(isNaN)))throw 0;
+      synth=false;$("src").textContent=`Seu arquivo: ${f.name} — ${RAW.length} amostras × ${gs} genes, ${tn.length} grupos, ${bn.length} lotes.`;
+      update();
+    }catch(_){$("src").textContent="Não consegui ler o CSV. Confira o formato (id, grupo, lote, genes numéricos).";}
+  };r.readAsText(f);
+};
+$("dl").onclick=()=>{
+  const H=["id","grupo","lote",...RAW[0].map((_,g)=>"gene"+(g+1))].join(",");
+  const R=RAW.map((r,i)=>["c"+(i+1),tn[T[i]],bn[B[i]],...r.map(v=>v.toFixed(2))].join(","));
+  const a=document.createElement("a");a.href="data:text/csv;charset=utf-8,"+encodeURIComponent(H+"\n"+R.join("\n"));
+  a.download="exemplo_expressao.csv";a.click();
+};
+/* 3D */
+const cv=$("cv"),ctx=cv.getContext("2d");
+function draw(){
+  const dpr=devicePixelRatio||1,w=cv.clientWidth,h=cv.clientHeight;
+  if(cv.width!==Math.round(w*dpr)){cv.width=w*dpr;cv.height=h*dpr}
+  ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,w,h);
+  const cs=getComputedStyle(document.documentElement),fg=cs.getPropertyValue("--fg"),ln=cs.getPropertyValue("--ln");
+  if(auto&&!drag)yaw+=.004;
+  const cy=Math.cos(yaw),sy=Math.sin(yaw),cp=Math.cos(pit),sp=Math.sin(pit),sc=Math.min(w,h)*.36;
+  const pr=([x,y,z])=>{const x1=x*cy+z*sy,z1=-x*sy+z*cy,y2=y*cp-z1*sp,z2=y*sp+z1*cp,f=3/(3+z2);return[w/2+x1*sc*f,h/2-y2*sc*f,z2,f]};
+  const o=pr([0,0,0]);ctx.strokeStyle=ln;ctx.lineWidth=1;ctx.font="12px system-ui";ctx.fillStyle=fg;
+  [[1,0,0,"PC1"],[0,1,0,"PC2"],[0,0,1,"PC3"]].forEach(([x,y,z,n])=>{const e=pr([x*1.1,y*1.1,z*1.1]);ctx.beginPath();ctx.moveTo(o[0],o[1]);ctx.lineTo(e[0],e[1]);ctx.stroke();ctx.fillText(n,e[0]+3,e[1])});
+  const key=$("by").value,pal=key==="b"?PB:PT,rad=Math.max(2.2,5-pts.length/250);
+  pts.map(q=>({q,r:pr(q.p)})).sort((a,b)=>b.r[2]-a.r[2]).forEach(({q,r})=>{
+    ctx.globalAlpha=Math.min(1,.55+.4*(r[3]-.7));ctx.fillStyle=pal[q[key]%pal.length];
+    ctx.beginPath();ctx.arc(r[0],r[1],rad*r[3],0,6.283);ctx.fill()});
+  ctx.globalAlpha=1;
+  const nm=key==="t"?tn:key==="b"?bn:Array.from({length:Math.max(...K)+1},(_,i)=>"Cluster "+(i+1));
+  $("lg").innerHTML=nm.map((n,i)=>`<span style="color:${pal[i%pal.length]}">●</span> ${n}`).join(" &nbsp; ");
+  requestAnimationFrame(draw);
+}
+cv.onpointerdown=e=>{drag=true;auto=false;lx=e.clientX;ly=e.clientY;cv.setPointerCapture(e.pointerId)};
+cv.onpointermove=e=>{if(!drag)return;yaw+=(e.clientX-lx)*.01;pit=Math.max(-1.4,Math.min(1.4,pit+(e.clientY-ly)*.01));lx=e.clientX;ly=e.clientY};
+cv.onpointerup=()=>drag=false;
+["bs","ns","fix","lg2"].forEach(i=>$(i).oninput=update);
+$("re").onclick=()=>{seed=Math.floor(Math.random()*1e6)+1;genSynth()};
+genSynth();draw();
+</script></body></html>
