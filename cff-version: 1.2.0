@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "Se você usar este software, por favor cite-o como abaixo."
+title: "Explorador 3D de Efeito de Lote"
+abstract: "Ferramenta educacional, 100% no navegador, para visualizar em 3D como o efeito de lote distorce dados de expressão gênica e como a correção muda o agrupamento. Dados padrão sintéticos; não destinada a uso clínico."
+type: software
+authors:
+  - family-names: "Oliveira"
+    given-names: "Taciane de Almeida"
+    orcid: "https://orcid.org/0000-0000-0000-0000"
+version: "1.0.0"
+date-released: "2026-11-03"
+license: MIT
+keywords:
+  - bioinformática
+  - efeito de lote
+  - expressão gênica
+  - PCA
+  - educação
+repository-code: "https://github.com/COLE-SEU-USUARIO/COLE-NOME-DO-REPOSITORIO"
